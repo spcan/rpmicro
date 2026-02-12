@@ -1,0 +1,30 @@
+[package]
+name = "rpmicro"
+version = "0.1.0"
+edition = "2021"
+
+# Logging dependencies
+# ################################
+
+[dependencies.defmt]
+version = "1"
+optional = true
+
+[dependencies.log]
+version = "0.4"
+optional = true
+
+# Miscellaneous dependencies.
+# ################################
+[dependencies.bitflags]
+version = "2"
+default-features = false
+
+[features]
+default = ["defmt"]
+
+defmt = ["dep:defmt"]
+log = ["dep:log"]
+
+QFN60 = []
+QFN80 = []
