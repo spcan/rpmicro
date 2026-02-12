@@ -6,11 +6,11 @@ pub struct GPIOTyped<const N: usize>;
 
 impl<const N: usize> GPIOControl for GPIOTyped<N> {
     fn control(&mut self) -> &mut AtomicRegister {
-        AtomicRegister::at(super::address::IOUSER + (0x08 * N))
+        AtomicRegister::at(super::address::IOUSER + (0x08 * N) + 0x04)
     }
 
     fn status(&mut self) -> &mut AtomicRegister {
-        AtomicRegister::at(super::address::IOUSER + (0x08 * N) + 0x04)
+        AtomicRegister::at(super::address::IOUSER + (0x08 * N))
     }
 
     fn pad(&mut self) -> &mut AtomicRegister {
