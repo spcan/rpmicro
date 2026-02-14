@@ -36,7 +36,7 @@ impl Core1Waker {
         let sequence = [0, 0, 1, STACKBOTTOM[1], STACKTOP[1], pointer];
         let mut success = false;
 
-        for i in 0..5 {
+        for _ in 0..5 {
             if let Ok(_) = self.wakeup(&sequence) {
                 success = true;
                 break;
@@ -112,11 +112,11 @@ impl Peripheral for Core1Waker {
 
 /// Core 1 trampoline function to jump to main code.
 fn trampoline() -> ! {
-    crate::log::info!("[CPU1] Hello world!");
+    crate::log::info!("[CPU1] Booting...");
 
     // Signal that it's okay for Core 0 to send the main function then read it.
     send(1);
-    crate::log::info!("[CPU1] Waiting for main function");
+    crate::log::trace!("[CPU1] Waiting for main function");
     let main = recv();
 
     // Jump to the main function.
