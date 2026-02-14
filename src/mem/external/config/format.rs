@@ -13,7 +13,7 @@ impl RWFormat {
 
     /// Sets the SPI configuration of the first byte sent in a transfer.
     pub const fn prefix(mut self, width: DataWidth) -> Self {
-        self.0 &= !((0x3 << 0) | (1 << 12));
+        self.0 &= !((0b11 << 0) | (1 << 12));
         self.0 |= (1 << 12) | ((width as u32) << 0);
         self
     }
