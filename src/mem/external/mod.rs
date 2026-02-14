@@ -3,11 +3,10 @@
 pub mod config;
 pub mod psram;
 
-mod peripheral;
+mod qmi;
 mod timings;
 
-use crate::{gpio::qspi::QMIChipSelect, interrupts::VectorTable, AtomicRegister};
-use peripheral::ExtMem;
+use crate::{gpio::qspi::QMIChipSelect, AtomicRegister};
 
 pub use config::{Config, DataWidth, RWFormat};
 pub use timings::{Pagebreak, Timings};
@@ -30,58 +29,55 @@ impl ExternalMemorySlot {
         config: Config,
         timings: Timings,
     ) -> ExternalMemory {
-        ExternalMemory::psram(self.0 as usize, size, cs, config, timings)
+        // Forget the pin provided, it's already configured.
+        core::mem::forget(cs);
+
+        ExternalMemory::psram(self.0 as usize, size, config, timings)
     }
 }
 
+/// Exposes control over one of the external memory slots of the device.
 pub struct ExternalMemory {
-    start: usize,
+    /// Indicates which slot this memory belongs to.
+    slot: usize,
+
+    /// The size in bytes of the external memory.
     size: usize,
+
+    /// Indicates if this memory is writable.
     writable: bool,
 }
 
 impl ExternalMemory {
+    const BASE: usize = 0x400D0000;
+
+    const TIMINGS: usize = Self::BASE + 0x0C;
+
+    const RDFORMAT: usize = Self::BASE + 0x10;
+
+    const RWSTRIDE: usize = 0x08;
+
+    const SLOTSTRIDE: usize = 0x14;
+
     /// Sets up one of the external memories as PSRAM.
     /// UNSAFETY : If any external memory is in use, running this function may cause a panic or hang the device.
     #[link_section = ".data"]
     #[inline(never)]
-    unsafe fn psram(
-        i: usize,
-        size: usize,
-        cs: QMIChipSelect,
-        config: Config,
-        timings: Timings,
-    ) -> Self {
-        // Forget the pin provided, it's already configured.
-        core::mem::forget(cs);
-
+    unsafe fn psram(slot: usize, size: usize, config: Config, timings: Timings) -> Self {
         unsafe {
             // Set the QSPI Data pins.
-            let mut pins = [0; 5];
-
-            pins[0] = core::ptr::read_volatile((0x40040000 + 0x08) as *mut u32);
-            pins[1] = core::ptr::read_volatile((0x40040000 + 0x0C) as *mut u32);
-            pins[2] = core::ptr::read_volatile((0x40040000 + 0x10) as *mut u32);
-            pins[3] = core::ptr::read_volatile((0x40040000 + 0x14) as *mut u32);
-            pins[4] = core::ptr::read_volatile((0x40040000 + 0x04) as *mut u32);
-
-            crate::log::info!("QSPI pins configuration pre-modification: {:#X}", pins);
-
-            core::ptr::write_volatile((0x40040000 + 0x08) as *mut u32, 0x7B);
-            core::ptr::write_volatile((0x40040000 + 0x0C) as *mut u32, 0x7B);
-            core::ptr::write_volatile((0x40040000 + 0x10) as *mut u32, 0x7B);
-            core::ptr::write_volatile((0x40040000 + 0x14) as *mut u32, 0x7B);
+            core::ptr::write_volatile((0x40040000 + 0x08) as *mut u32, 0x56);
+            core::ptr::write_volatile((0x40040000 + 0x0C) as *mut u32, 0x56);
+            core::ptr::write_volatile((0x40040000 + 0x10) as *mut u32, 0x5A);
+            core::ptr::write_volatile((0x40040000 + 0x14) as *mut u32, 0x5A);
 
             // Set the QSPI SCK pin.
-            core::ptr::write_volatile((0x40040000 + 0x04) as *mut u32, 0x3B);
+            core::ptr::write_volatile((0x40040000 + 0x04) as *mut u32, 0x56);
         }
 
-        // VectorTable::report();
-
         // Acquire the external memory interface in direct mode (safe configuration).
-        let mut qmidirect = unsafe { ExtMem::steal().direct(10, 2) };
-
-        crate::log::info!("QMI Direct mode successfully activated");
+        crate::log::warn!("Activating QMI direct mode. Flash accesses from now on will panic!");
+        let mut qmidirect = unsafe { qmi::QMIDirect::create(slot) };
 
         // Poll until the last XIP transfer's cooldown expires.
         while qmidirect.busy() {
@@ -90,60 +86,84 @@ impl ExternalMemory {
 
         // Send the command to exit quad mode and reset the chip.
         for (iwidth, data) in config.commands.reset {
-            qmidirect.write(i, *iwidth, [*data]);
+            qmidirect.write(*iwidth, &[*data]);
         }
-        // qmidirect.write(i, DataWidth::Quad, [Command::ExitQuadMode]);
-        // qmidirect.write(i, DataWidth::Single, [Command::ResetEnable]);
-        // qmidirect.write(i, DataWidth::Single, [Command::Reset]);
 
         // Read the Known Good Die (KGD) and the EID registers.
         let mut recv = [0u8; 6];
-        let mut send = [0xFF; 6];
-        send[0] = Command::ReadID as u8;
+        let mut send = [0x00; 6];
+        send[0] = 0x9F;
 
-        qmidirect.transfer(i, DataWidth::Single, &send, &mut recv);
-
-        crate::log::info!("KGD and EID registers have been read: {:X}", recv);
+        qmidirect.transfer(DataWidth::Single, &send, &mut recv);
 
         // Enter a special mode if needed.
-        // if let Some(sequence) = config.commands.mode {
-        //     for (iwidth, data) in sequence {
-        //         qmidirect.write(i, iwidth, [data]);
-        //     }
-        // }
+        if let Some(sequence) = config.commands.mode {
+            for (iwidth, data) in sequence {
+                qmidirect.write(*iwidth, &[*data]);
+            }
+        }
 
-        // Enter Dual / Quad mode if necessary.
-        // if config.rdformat.data == DataWidth::Dual {
-        //     //qmidirect.write(DataWidth::Single, [Command::EnterDualMode]);
-        // }
+        // Stop direct mode. From this point on, accesses to any memory can be performed.
+        qmidirect.stop();
 
-        // if config.rdformat.data as usize == DataWidth::Quad as usize {
-        qmidirect.write(i, DataWidth::Single, [Command::EnterQuadMode]);
-        // }
+        crate::asm::dmb();
+        crate::asm::dsb();
+        crate::asm::isb();
 
-        // Stop direct mode and configure the PSRAM.
-        // From this point on, accesses to any memory can be performed.
-        crate::log::info!("Stopping the direct mode");
-        let mut psramcfg = unsafe { qmidirect.stop().mem(i) };
+        crate::log::debug!("KGD and EID registers: {:X}", recv);
 
-        crate::log::info!("Configuring the PSRAM");
-
-        psramcfg.rdconfig(config.rdformat, Command::ReadQuad as u8);
-        psramcfg.wrconfig(config.wrformat, Command::WriteQuad as u8);
-
-        // Set default timings and enable writes to PSRAM in the XIP.
-        psramcfg.timings(timings);
-        AtomicRegister::at(0x400C8000).set((1u32 << (10 + i)) | 0b11);
-
-        // Calculate the start address of the memory.
-        let start = 0x10000000 + (0x01000000 * i);
-
-        // Create the memory.
-        ExternalMemory {
-            start,
+        // Configure the PSRAM, set the RW format and timings.
+        let mut psram = Self {
+            slot,
             size,
             writable: true,
+        };
+
+        crate::log::debug!("Configuring the PSRAM...");
+
+        psram.rdconfig(config.rdformat, config.commands.read as u8);
+        psram.wrconfig(config.wrformat, config.commands.write as u8);
+
+        psram.timings(timings);
+
+        // Enable writes to PSRAM in the XIP.
+        AtomicRegister::at(0x400C8000).set((1u32 << (10 + slot)) | 0b11);
+
+        psram
+    }
+
+    /// Sets the read configuration of this external memory.
+    #[inline(always)]
+    pub fn rdconfig(&mut self, fmt: RWFormat, cmd: u8) {
+        self.format::<0>(fmt, cmd);
+    }
+
+    /// Sets the write configuration of this external memory.
+    #[inline(always)]
+    pub fn wrconfig(&mut self, fmt: RWFormat, cmd: u8) {
+        self.format::<1>(fmt, cmd);
+    }
+
+    /// Common function to write a R/W configuration.
+    /// Used for code compactness.
+    #[inline(always)]
+    fn format<const RW: usize>(&mut self, fmt: RWFormat, cmd: u8) {
+        // Calculate the register in which to store this configuration.
+        let register = Self::RDFORMAT + (Self::RWSTRIDE * RW) + (Self::SLOTSTRIDE * self.slot);
+
+        unsafe {
+            core::ptr::write_volatile(register as *mut u32, fmt.0);
+            core::ptr::write_volatile((register + 0x04) as *mut u32, cmd as u32);
         }
+    }
+
+    /// Configure the timings of this interface.
+    /// UNSAFETY : Setting this method with untested `Timings` can render this memory unusable.
+    pub unsafe fn timings(&mut self, timings: Timings) {
+        core::ptr::write_volatile(
+            (Self::TIMINGS + (Self::SLOTSTRIDE * self.slot)) as *mut u32,
+            timings.into(),
+        );
     }
 
     /// Validates the memory (if configured as writable).
@@ -165,6 +185,8 @@ impl ExternalMemory {
                 *word = (index & 0xFF) as u8;
             }
         }
+
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
 
         // Read back and check amount of errors.
         let mut errors = 0;
@@ -190,161 +212,28 @@ impl ExternalMemory {
 
     /// Returns the whole memory range in the cached region.
     pub unsafe fn cached<T: Sized>(&mut self) -> &'static mut [T] {
-        core::slice::from_raw_parts_mut(self.start as *mut T, self.size / core::mem::size_of::<T>())
+        // Base address for the cached XIP memory.
+        const BASE: usize = 0x10000000;
+
+        let start = BASE + (0x01000000 * self.slot);
+
+        core::slice::from_raw_parts_mut(start as *mut T, self.size / core::mem::size_of::<T>())
     }
 
     /// Returns the whole memory range in the uncached region.
     pub unsafe fn uncached<T: Sized>(&mut self) -> &'static mut [T] {
-        core::slice::from_raw_parts_mut(
-            (self.start + 0x04000000) as *mut T,
-            self.size / core::mem::size_of::<T>(),
-        )
+        // Base address for the cached XIP memory.
+        const BASE: usize = 0x14000000;
+
+        let start = BASE + (0x01000000 * self.slot);
+
+        core::slice::from_raw_parts_mut(start as *mut T, self.size / core::mem::size_of::<T>())
     }
 }
 
-// /// Results for the sequential throughput test.
-// #[derive(Clone, Copy, Default)]
-// pub struct ThroughputResult {
-//     /// `u8` test results.
-//     pub byte: TypeResult<u8>,
-
-//     /// `u16` test results.
-//     pub half: TypeResult<u16>,
-
-//     /// `u32` test results.
-//     pub word: TypeResult<u32>,
-
-//     /// `u64` test results.
-//     pub double: TypeResult<u64>,
-
-//     /// `u128` test results.
-//     pub wide: TypeResult<u128>,
-// }
-
-// /// Results of a test for a given type.
-// #[derive(Clone, Copy, Default)]
-// pub struct TypeResult<T: Sized> {
-//     /// Amount of elements in the type.
-//     pub count: usize,
-
-//     /// Result for the given type in cached memory.
-//     pub cached: TestResult,
-
-//     /// Result for the given type in uncached memory.
-//     pub uncached: TestResult,
-
-//     _phantom: core::marker::PhantomData<T>,
-// }
-
-// impl<T: 'static + Sized + Copy + Default> TypeResult<T> {
-//     pub fn bytes(&self) -> usize {
-//         self.count * core::mem::size_of::<T>()
-//     }
-
-//     pub fn test(&mut self, memory: &mut ExternalMemory, count: usize) {
-//         // Store the count to have it available in the tests.
-//         self.count = count;
-
-//         // Test the cached memory.
-//         let cached = unsafe { &mut memory.cached()[0..count] };
-
-//         self.cached.read = self.read(cached);
-//         if memory.writable {
-//             self.cached.write = self.write(cached);
-//         }
-
-//         // Test the uncached memory.
-//         let uncached = unsafe { &mut memory.uncached()[0..count] };
-
-//         self.uncached.read = self.read(uncached);
-//         if memory.writable {
-//             self.uncached.write = self.write(uncached);
-//         }
-//     }
-
-//     fn read(&self, array: &[T]) -> f32 {
-//         let base = array.as_ptr();
-
-//         let start = Instant::now();
-
-//         for i in 0..self.count {
-//             let _ = unsafe { core::ptr::read_volatile(base.offset(i as isize)) };
-//         }
-
-//         let end = Instant::now();
-
-//         (self.count * core::mem::size_of::<T>()) as f32 / (end - start).as_micros() as f32
-//     }
-
-//     fn write(&self, array: &mut [T]) -> f32 {
-//         let base = array.as_mut_ptr();
-//         let default = Default::default();
-
-//         let start = Instant::now();
-
-//         for i in 0..self.count {
-//             unsafe { core::ptr::write_volatile(base.offset(i as isize), default) };
-//         }
-
-//         let end = Instant::now();
-
-//         (self.count * core::mem::size_of::<T>()) as f32 / (end - start).as_micros() as f32
-//     }
-// }
-
-// /// Results of a test for a given type in a given memory (cached or uncached).
-// #[derive(Clone, Copy, Default)]
-// pub struct TestResult {
-//     /// Read performance of the test in MiB / s.
-//     pub read: f32,
-
-//     /// Write performance of the test in MiB / s.
-//     pub write: f32,
-// }
-
-/// Default commands for PSRAM devices.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-
-pub enum Command {
-    /// Write in SPI mode, fast frequency.
-    Write = 0x02,
-
-    /// Read in SPI mode, slow frequency.
-    ReadSlow = 0x03,
-
-    /// Read in SPI mode, fast frequency.
-    ReadFast = 0x0B,
-
-    /// Sets the chip in Quad SPI mode.
-    EnterQuadMode = 0x35,
-
-    /// Writes in Quad SPI mode, fast frequency.
-    WriteQuad = 0x38,
-
-    /// Enables the chip to be reset by the next command.
-    /// This effect gets cancelled if the next command is not a `Reset`.
-    ResetEnable = 0x66,
-
-    /// Resets the chip.
-    /// Must be preceded by a `ResetEnable` command to take effect.
-    Reset = 0x99,
-
-    /// Reads the KGD and EID registers.
-    ReadID = 0x9F,
-
-    /// Read in Quad SPI mode, fast frequency.
-    ReadQuad = 0xEB,
-
-    /// Default command to exit Quad Mode I/O.
-    ExitQuadMode = 0xF5,
-}
-
-impl Into<u16> for Command {
-    fn into(self) -> u16 {
-        self as u16
-    }
-}
-
+/// Generic trait for external memory devices. This trait is implementable by
+/// the user or other libraries to generate predetermined configurations.
 pub trait Device {
+    /// Creates a configuration for the device.
     fn config() -> config::Config;
 }
