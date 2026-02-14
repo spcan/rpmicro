@@ -31,25 +31,25 @@ impl Local {
         // Set the stack limit.
         let stacklim = stackbottom + 512;
 
-        crate::log::info!("[CPU{}] Setting STACKLIM to {:#010X}", cpuid(), stacklim);
+        crate::log::trace!("[CPU{}] Setting STACKLIM to {:#010X}", cpuid(), stacklim);
 
         let mut r: u32 = 0;
         unsafe {
             core::arch::asm!("mrs {}, MSP", out(reg) r, options(nomem, nostack));
         }
-        crate::log::info!("[CPU{}] Current MSP: {:#010X}", cpuid(), r);
+        crate::log::trace!("[CPU{}] Current MSP: {:#010X}", cpuid(), r);
         unsafe {
             core::arch::asm!("mrs {}, PSP", out(reg) r, options(nomem, nostack));
         }
-        crate::log::info!("[CPU{}] Current PSP: {:#010X}", cpuid(), r);
+        crate::log::trace!("[CPU{}] Current PSP: {:#010X}", cpuid(), r);
         unsafe {
             core::arch::asm!("mrs {}, MSPLIM", out(reg) r, options(nomem, nostack));
         }
-        crate::log::info!("[CPU{}] Current MSPLIM: {:#010X}", cpuid(), r);
+        crate::log::trace!("[CPU{}] Current MSPLIM: {:#010X}", cpuid(), r);
         unsafe {
             core::arch::asm!("mrs {}, PSPLIM", out(reg) r, options(nomem, nostack));
         }
-        crate::log::info!("[CPU{}] Current PSPLIM: {:#010X}", cpuid(), r);
+        crate::log::trace!("[CPU{}] Current PSPLIM: {:#010X}", cpuid(), r);
 
         // unsafe {
         //     core::arch::asm!("msr MSPLIM, {0}", in(reg) stacklim, options(nomem, nostack));

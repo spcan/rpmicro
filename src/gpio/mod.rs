@@ -1,5 +1,7 @@
 //! General Purpose Input / Output (GPIO) module.
 
+#![allow(unused)]
+
 pub mod analog;
 pub mod input;
 pub mod output;
