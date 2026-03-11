@@ -15,6 +15,18 @@ pub use analog::Analog;
 pub use output::Output;
 pub use pins::{GPIOAny, GPIOList, GPIOTyped};
 
+/// The amount of GPIO pins in the device.
+#[cfg(feature = "QFN60")]
+pub(crate) const GPIOCOUNT: usize = 32;
+
+/// The amount of GPIO pins in the device.
+#[cfg(feature = "QFN80")]
+pub(crate) const GPIOCOUNT: usize = 48;
+
+/// The amount of GPIO pins in the device.
+#[cfg(not(any(feature = "QFN60", feature = "QFN80")))]
+pub(crate) const GPIOCOUNT: usize = 0;
+
 /// Common trait for all abstractions interacting with the GPIO pins.
 pub(crate) trait GPIOControl {
     /// Returns the `AtomicRegister` containing the status of the GPIO.

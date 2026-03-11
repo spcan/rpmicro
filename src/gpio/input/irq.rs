@@ -2,36 +2,55 @@
 
 use crate::{cpuid, AtomicRegister};
 
-const BASE: usize = 0x40028000;
+use super::*;
 
-const INTE: usize = BASE + 0x248;
-
-const INTF: usize = BASE + 0x260;
-
-const INTS: usize = BASE + 0x278;
-
-const CPUSTRIDE: usize = 0x290 - 0x248;
-
-// pub(super) static mut WAKERS: [(); GPIOCOUNT] = [(); GPIOCOUNT];
+use core::task::Waker;
 
 pub(crate) unsafe fn handler() {
+    // Mask for a full GPIO interrupt group.
+    const MASK: u32 = 0xF;
+
     // Precompute some offsets to reduce operations in the IRQ.
     let stride = CPUSTRIDE * cpuid() as usize;
 
     // Map per group to reduce read operations.
-    for group in 0..6 {
+    for group in 0..(crate::gpio::GPIOCOUNT / 8) {
+        // Precompute this to reduce instructions in the handler.
+        let groupx4 = group * 4;
+
         // Get the registers for this group.
-        let inte = AtomicRegister::at(INTE + (group * 4) + stride);
-        let ints = AtomicRegister::at(INTS + (group * 4) + stride).read();
+        let inte = AtomicRegister::at(INTE + groupx4 + stride);
+        let ints = AtomicRegister::at(INTS + groupx4 + stride).read();
 
         for pin in 0..8 {
+            // Precompute this to reduce instructions in the handler.
+            let pinx4 = pin * 4;
+
             // Check if an event happened on this pin.
             // If so, disable the interrupt and wake the task.
-            let event = (ints >> (pin * 4)) & 0xf;
+            let event = (ints >> pinx4) & MASK;
             if event != 0 {
-                inte.clear(0xFu32 << (pin * 4));
-                // wakers[(group * 8) + pin].wake();
+                inte.clear(MASK << pinx4);
+                if let Some(waker) = WAKERS[(group * 8) + pin].take() {
+                    waker.wake();
+                }
             }
         }
     }
 }
+
+#[cfg(feature = "QFN60")]
+pub(super) static mut WAKERS: [Option<Waker>; crate::gpio::GPIOCOUNT] = [
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+];
+
+#[cfg(feature = "QFN80")]
+pub(super) static mut WAKERS: [Option<Waker>; crate::gpio::GPIOCOUNT] = [
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+    None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+];
+
+#[cfg(not(any(feature = "QFN60", feature = "QFN80")))]
+pub(super) static mut WAKERS: [Option<Waker>; crate::gpio::GPIOCOUNT] = [];
