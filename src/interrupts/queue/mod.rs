@@ -45,9 +45,8 @@ impl<T: ISRObject> ISRQueue<T> {
 
         // Check if this is the first item in the queue.
         let first = match self.head {
-            // There is already an item at the head, so add to the tail.
+            // There is already an item at the head, so set this item as the tail.
             Some(_) => {
-                // Set this new item as the tail.
                 let old = self.tail.replace(value);
 
                 if let Some(mut tail) = old {
@@ -57,9 +56,8 @@ impl<T: ISRObject> ISRQueue<T> {
                 false
             }
 
-            // There is no head, set it now.
+            // There is no head, set both the head and tail of the queue.
             None => {
-                // Set both the head and tail of the queue.
                 self.head.replace(value);
                 self.tail.replace(value);
 
@@ -85,6 +83,11 @@ impl<T: ISRObject> ISRQueue<T> {
 
         if let Some(output) = output {
             self.head = output.as_ref().next;
+
+            // If the queue is now empty, clear the tail as well.
+            if self.head.is_none() {
+                self.tail = None;
+            }
         }
 
         // Unlock the queue and return the next item.
